@@ -55,20 +55,20 @@ hyp = {'lr0': 0.01,  # initial learning rate (SGD=1E-2, Adam=1E-3)
 
 def train(hyp, opt, device, tb_writer=None):
     print(f'Hyperparameters {hyp}')
-    log_dir = tb_writer.log_dir if tb_writer else 'runs/evolve'  # run directory
-    wdir = str(Path(log_dir) / 'weights') + os.sep  # weights directory
+    log_dir = Path(tb_writer.log_dir) if tb_writer else Path(opt.logdir) / 'evolve'  # logging directory
+    wdir = str(log_dir / 'weights') + os.sep  # weights directory
     os.makedirs(wdir, exist_ok=True)
     last = wdir + 'last.pt'
     best = wdir + 'best.pt'
-    results_file = log_dir + os.sep + 'results.txt'
+    results_file = str(log_dir / 'results.txt')
     epochs, batch_size, total_batch_size, weights, rank = \
-        opt.epochs, opt.batch_size, opt.total_batch_size, opt.weights, opt.local_rank
+        opt.epochs, opt.batch_size, opt.total_batch_size, opt.weights, opt.global_rank
+    
     # TODO: Use DDP logging. Only the first process is allowed to log.
-
     # Save run settings
-    with open(Path(log_dir) / 'hyp.yaml', 'w') as f:
+    with open(log_dir / 'hyp.yaml', 'w') as f:
         yaml.dump(hyp, f, sort_keys=False)
-    with open(Path(log_dir) / 'opt.yaml', 'w') as f:
+    with open(log_dir / 'opt.yaml', 'w') as f:
         yaml.dump(vars(opt), f, sort_keys=False)
 
     # Configure
@@ -184,7 +184,7 @@ def train(hyp, opt, device, tb_writer=None):
 
     # DDP mode
     if cuda and rank != -1:
-        model = DDP(model, device_ids=[rank], output_device=rank)
+        model = DDP(model, device_ids=[opt.local_rank], output_device=(opt.local_rank))
 
     # Trainloader
     dataloader, dataset = create_dataloader(train_path, imgsz, batch_size, gs, opt, hyp=hyp, augment=True,
@@ -325,7 +325,7 @@ def train(hyp, opt, device, tb_writer=None):
 
                 # Plot
                 if ni < 3:
-                    f = str(Path(log_dir) / ('train_batch%g.jpg' % ni))  # filename
+                    f = str(log_dir / ('train_batch%g.jpg' % ni))  # filename
                     result = plot_images(images=imgs, targets=targets, paths=paths, fname=f)
                     if tb_writer and result is not None:
                         tb_writer.add_image(f, result, dataformats='HWC', global_step=epoch)
@@ -433,7 +433,8 @@ if __name__ == '__main__':
     parser.add_argument('--single-cls', action='store_true', help='train as single-class dataset')
     parser.add_argument('--adam', action='store_true', help='use torch.optim.Adam() optimizer')
     parser.add_argument('--sync-bn', action='store_true', help='use SyncBatchNorm, only available in DDP mode')
-    parser.add_argument('--local_rank', type=int, default=-1, help='DDP parameter, do not modify')
+    parser.add_argument('--local-rank', type=int, default=-1, help='DDP parameter, do not modify')
+    parser.add_argument('--logdir', type=str, default='runs/', help='logging directory')
     opt = parser.parse_args()
 
     # Resume
@@ -441,8 +442,7 @@ if __name__ == '__main__':
     if last and not opt.weights:
         print(f'Resuming training from {last}')
     opt.weights = last if opt.resume and not opt.weights else opt.weights
-
-    if opt.local_rank in [-1, 0]:
+    if opt.local_rank == -1 or ("RANK" in os.environ and os.environ["RANK"] == "0"):
         check_git_status()
     opt.cfg = check_file(opt.cfg)  # check file
     opt.data = check_file(opt.data)  # check file
@@ -454,7 +454,8 @@ if __name__ == '__main__':
     device = select_device(opt.device, batch_size=opt.batch_size)
     opt.total_batch_size = opt.batch_size
     opt.world_size = 1
-
+    opt.global_rank = -1
+    
     # DDP mode
     if opt.local_rank != -1:
         assert torch.cuda.device_count() > opt.local_rank
@@ -462,6 +463,7 @@ if __name__ == '__main__':
         device = torch.device('cuda', opt.local_rank)
         dist.init_process_group(backend='nccl', init_method='env://')  # distributed backend
         opt.world_size = dist.get_world_size()
+        opt.global_rank = dist.get_rank()
         assert opt.batch_size % opt.world_size == 0, '--batch-size must be multiple of CUDA device count'
         opt.batch_size = opt.total_batch_size // opt.world_size
 
@@ -470,9 +472,9 @@ if __name__ == '__main__':
     # Train
     if not opt.evolve:
         tb_writer = None
-        if opt.local_rank in [-1, 0]:
-            print('Start Tensorboard with "tensorboard --logdir=runs", view at http://localhost:6006/')
-            tb_writer = SummaryWriter(log_dir=increment_dir('runs/exp', opt.name))
+        if opt.global_rank in [-1, 0]:
+            print('Start Tensorboard with "tensorboard --logdir %s", view at http://localhost:6006/' % opt.logdir)
+            tb_writer = SummaryWriter(log_dir=increment_dir(Path(opt.logdir) / 'exp', opt.name))  # runs/exp
 
         train(hyp, opt, device, tb_writer)
 
