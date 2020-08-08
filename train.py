@@ -13,7 +13,6 @@ import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 import torch.utils.data
 import yaml
-from torch.cuda import amp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -27,6 +26,13 @@ from utils.general import (
     get_latest_run, check_git_status, check_file, increment_dir, print_mutation, plot_evolution)
 from utils.google_utils import attempt_download
 from utils.torch_utils import init_seeds, ModelEMA, select_device
+
+mixed_precision = True
+try:  # Mixed precision training https://github.com/NVIDIA/apex
+    from apex import amp
+except:
+    print('Apex recommended for faster mixed precision training: https://github.com/NVIDIA/apex')
+    mixed_precision = False  # not installed
 
 # Hyperparameters
 hyp = {'lr0': 0.01,  # initial learning rate (SGD=1E-2, Adam=1E-3)
@@ -170,6 +176,10 @@ def train(hyp, opt, device, tb_writer=None):
 
         del ckpt
 
+    # Mixed precision training https://github.com/NVIDIA/apex
+    if mixed_precision:
+        model, optimizer = amp.initialize(model, optimizer, opt_level='O1', verbosity=0)
+
     # DP mode
     if cuda and rank == -1 and torch.cuda.device_count() > 1:
         model = torch.nn.DataParallel(model)
@@ -230,7 +240,6 @@ def train(hyp, opt, device, tb_writer=None):
     maps = np.zeros(nc)  # mAP per class
     results = (0, 0, 0, 0, 0, 0, 0)  # 'P', 'R', 'mAP', 'F1', 'val GIoU', 'val Objectness', 'val Classification'
     scheduler.last_epoch = start_epoch - 1  # do not move
-    scaler = amp.GradScaler(enabled=cuda)
     if rank in [0, -1]:
         print('Image sizes %g train, %g test' % (imgsz, imgsz_test))
         print('Using %g dataloader workers' % dataloader.num_workers)
@@ -291,26 +300,27 @@ def train(hyp, opt, device, tb_writer=None):
                     ns = [math.ceil(x * sf / gs) * gs for x in imgs.shape[2:]]  # new shape (stretched to gs-multiple)
                     imgs = F.interpolate(imgs, size=ns, mode='bilinear', align_corners=False)
 
-            # Autocast
-            with amp.autocast(enabled=cuda):
-                # Forward
-                pred = model(imgs)
+            # Forward
+            pred = model(imgs)
 
-                # Loss
-                loss, loss_items = compute_loss(pred, targets.to(device), model)  # scaled by batch_size
-                if rank != -1:
-                    loss *= opt.world_size  # gradient averaged between devices in DDP mode
-                # if not torch.isfinite(loss):
-                #     print('WARNING: non-finite loss, ending training ', loss_items)
-                #     return results
+            # Loss
+            loss, loss_items = compute_loss(pred, targets.to(device), model)  # scaled by batch_size
+            if rank != -1:
+                loss *= opt.world_size  # gradient averaged between devices in DDP mode
+            if not torch.isfinite(loss):
+                print('WARNING: non-finite loss, ending training ', loss_items)
+                return results
 
             # Backward
-            scaler.scale(loss).backward()
+            if mixed_precision:
+                with amp.scale_loss(loss, optimizer) as scaled_loss:
+                    scaled_loss.backward()
+            else:
+                loss.backward()
 
             # Optimize
             if ni % accumulate == 0:
-                scaler.step(optimizer)  # optimizer.step
-                scaler.update()
+                optimizer.step()
                 optimizer.zero_grad()
                 if ema is not None:
                     ema.update(model)
@@ -318,7 +328,7 @@ def train(hyp, opt, device, tb_writer=None):
             # Print
             if rank in [-1, 0]:
                 mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
-                mem = '%.3gG' % (torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0)  # (GB)
+                mem = '%.3gG' % (torch.cuda.memory_cached() / 1E9 if torch.cuda.is_available() else 0)  # (GB)
                 s = ('%10s' * 2 + '%10.4g' * 6) % (
                     '%g/%g' % (epoch, epochs - 1), mem, *mloss, targets.shape[0], imgs.shape[-1])
                 pbar.set_description(s)
@@ -451,7 +461,7 @@ if __name__ == '__main__':
         with open(opt.hyp) as f:
             hyp.update(yaml.load(f, Loader=yaml.FullLoader))  # update hyps
     opt.img_size.extend([opt.img_size[-1]] * (2 - len(opt.img_size)))  # extend to 2 sizes (train, test)
-    device = select_device(opt.device, batch_size=opt.batch_size)
+    device = select_device(opt.device, apex=mixed_precision, batch_size=opt.batch_size)
     opt.total_batch_size = opt.batch_size
     opt.world_size = 1
     opt.global_rank = -1
