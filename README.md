@@ -18,6 +18,8 @@ This repository represents Ultralytics open-source research into future object d
 
 ## Pretrained Checkpoints
 
+Versione V2-1.6
+
 | Model | AP<sup>val</sup> | AP<sup>test</sup> | AP<sub>50</sub> | Speed<sub>GPU</sub> | FPS<sub>GPU</sub> || params | FLOPS |
 |---------- |------ |------ |------ | -------- | ------| ------ |------  |  :------: |
 | [YOLOv5s](https://drive.google.com/open?id=1Drs_Aiu7xx6S-ix95f9kNsA6ueKRpN2J)    | 36.1     | 36.1     | 55.3     | **2.1ms** | **476** || 7.5M   | 13.2B
