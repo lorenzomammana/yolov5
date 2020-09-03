@@ -13,8 +13,8 @@ from tqdm import tqdm
 from models.experimental import attempt_load
 from utils.datasets import create_dataloader
 from utils.general import (
-    coco80_to_coco91_class, check_file, check_img_size, compute_loss, non_max_suppression,
-    scale_coords, xyxy2xywh, clip_coords, plot_images, xywh2xyxy, box_iou, output_to_target, ap_per_class)
+    coco80_to_coco91_class, check_dataset, check_file, check_img_size, compute_loss, non_max_suppression, scale_coords, 
+    xyxy2xywh, clip_coords, plot_images, xywh2xyxy, box_iou, output_to_target, ap_per_class, set_logging)
 from utils.torch_utils import select_device, time_synchronized
 
 
@@ -41,6 +41,7 @@ def test(data,
         device = next(model.parameters()).device  # get model device
 
     else:  # called directly
+        set_logging()
         device = select_device(opt.device, batch_size=batch_size)
         merge, save_txt = opt.merge, opt.save_txt  # use Merge NMS, save *.txt labels
         if save_txt:
@@ -70,6 +71,7 @@ def test(data,
     model.eval()
     with open(data) as f:
         data = yaml.load(f, Loader=yaml.FullLoader)  # model dict
+    check_dataset(data)  # check
     nc = 1 if single_cls else int(data['nc'])  # number of classes
     iouv = torch.linspace(0.5, 0.95, 10).to(device)  # iou vector for mAP@0.5:0.95
     niou = iouv.numel()
