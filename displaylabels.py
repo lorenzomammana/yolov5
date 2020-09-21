@@ -7,9 +7,10 @@ def breakline(line):
     return int(classe), float(x_center), float(y_center), float(w), float(h)
 
 
-img = cv2.imread(r'camel\images\Seq15\IR\000053.jpg')
+img = cv2.imread('camel/images/Seq30/IR/000089.jpg')
 
-with open(r'camel\labels\Seq15\IR\000053.txt') as f:
+colors = [(66, 242, 245), (17, 250, 40), (17, 21, 250)]
+with open('camel/labels/Seq30/IR/000089.txt') as f:
     lines = f.read().splitlines()
 
     for line in lines:
@@ -26,9 +27,9 @@ with open(r'camel\labels\Seq15\IR\000053.txt') as f:
         br_x = int(tl_x + w)
         br_y = int(tl_y + h)
 
-        img = cv2.rectangle(img, (tl_x, tl_y), (br_x, br_y), (255, 0, 0), 2)
+        img = cv2.rectangle(img, (tl_x, tl_y), (br_x, br_y), colors[classe], 2)
 
-
-cv2.imshow('out', img)
-cv2.waitKey(0)
-cv2.destroyAllWindows()
+cv2.imwrite('labels_out.png', img)
+# cv2.imshow('out', img)
+# cv2.waitKey(0)
+# cv2.destroyAllWindows()
